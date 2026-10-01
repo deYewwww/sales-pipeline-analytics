@@ -120,8 +120,8 @@ def test_roundtrip():
         sys.exit(1)
 
     checks = [
-        ("event_id", found_event["event_id"] == marker),
-        ("deal_id", found_event["deal_id"] == "test-deal-001"),
+        ("event_id",      found_event["event_id"] == marker),
+        ("deal_id",       found_event["deal_id"] == "test-deal-001"),
         ("event_type",    found_event["event_type"] == "deal_created"),
         ("new_stage",     found_event["new_stage"] == "Enquiry"),
         ("deal_value_rm", found_event["deal_value_rm"] == 12500.00),
