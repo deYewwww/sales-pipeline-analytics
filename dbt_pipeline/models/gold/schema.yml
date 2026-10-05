@@ -1,0 +1,32 @@
+version: 2 
+
+models:
+  - name: fct_stage_transitions
+    description: "One row per deal leaving a stage(stage_changed or deal_lost)"
+    columns:
+      - name: deal_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_deals')
+                field: deal_id
+
+      - name: from_stage 
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Enquiry', 'Quoted', 'Won']
+
+      - name: to_stage
+        data_tests:
+          - not_null 
+          - accepted_values:
+              arguments:
+                values: ['Enquiry', 'Quoted', 'Won', 'Invoiced', 'Lost']
+
+      - name: hours_in_stage
+        data_tests:
+          - not_null 
+          

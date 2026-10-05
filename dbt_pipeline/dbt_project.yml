@@ -1,0 +1,17 @@
+name: 'sales_pipeline_analytics'
+
+profile: 'sales_pipeline_analytics'
+
+seed-paths: ["seeds"]
+model-paths: ["models"]
+macro-paths: ["macros"]
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  sales_pipeline_analytics:
+    staging:
+      +materialized: view
+    gold:
+      +materialized: table

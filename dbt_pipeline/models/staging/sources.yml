@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: silver
+    database: sales_pipeline_analytics
+    schema: silver
+    tables:
+      - name: deal_events_cleaned 
+        description: "Cleaned deal lifecycle events from Spark streaming pipeline"
+
+        
