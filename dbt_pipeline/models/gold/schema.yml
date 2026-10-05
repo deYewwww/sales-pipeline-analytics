@@ -1,32 +1,184 @@
 version: 2 
 
 models:
+  # ------------------------------ DIMENSIONS ------------------------------
+  - name: dim_deals
+    description: >
+      SCD Type 2 deal dimension. One row per deal per version. 
+      A new version starts when stage, value, name, or vertical changes.
+      Filter is_current = true fro the latest state of each stage.
+    columns:
+      - name: deal_surrogate_key
+        description: "Unique key per deal version (MD5 of deal_id + timestamp + row number)."
+        data_tests:
+          - not_null
+          - unique
+      - name: deal_id
+        description: "Natural key. Repeats once per version."
+        data_tests:
+          - not_null
+      - name: deal_stage
+        description: "Stage of the deal in version."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Enquiry', 'Quoted', 'Won', 'Invoiced', 'Lost']
+      - name: deal_value
+        description: "Deal value in MYR (decimal). Value must greater than 0."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: valid_from 
+        description: "When this version became true."
+      - name: valid_to 
+        description: "When this version was replaced. Null for the current version."
+      - name: is_current
+        description: "True for the latest version. Exactly one per deal."
+        data_tests:
+          - not_null 
+  # ------------------------------ FACTS ------------------------------
   - name: fct_stage_transitions
-    description: "One row per deal leaving a stage(stage_changed or deal_lost)"
+    description: > 
+      One row per deal leaving a stage(stage_changed or deal_lost events).
+      Build from stg_deal_events. deal_created events are used only to give 
+      Enquiry a start time, then removed. Backward move like Quoted -> Enquiry
+      are valid renegotiation evemts and need to be kept. 
     columns:
       - name: deal_id
+        description: "Natural key of the deal."
         data_tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('dim_deals')
                 field: deal_id
-
       - name: from_stage 
+        description: "Stage the deal left. Never be Invoiced or Lost."
         data_tests:
           - not_null
           - accepted_values:
               arguments:
                 values: ['Enquiry', 'Quoted', 'Won']
-
       - name: to_stage
+        description: "Stage the deal move to. Lost comes from deal_lost event."
         data_tests:
           - not_null 
           - accepted_values:
               arguments:
                 values: ['Enquiry', 'Quoted', 'Won', 'Invoiced', 'Lost']
-
+      - name: transitioned_at
+        description: "Timestamp the deal left from_stage."
       - name: hours_in_stage
+        description: >
+          Whole hours spent in from_stage (TIMESTAMPDIFF truncates minutes).
+          Measured from the previous stage boundary event for the same deal.
         data_tests:
           - not_null 
+  
+  - name: fct_pipeline_snapshot
+    description: >
+      Daily snapshot of the pipeline: which stage each edeal was in on each date.
+      Build with a date spine (sequence + explode) joined to each deal's
+      valid_from / valid_to range in dim_deals. 
+
+  # ------------------------------ GOLD ------------------------------
+  - name: gold_conversion_funnel
+    description: >
+      Stage-to-stage conversion. One row per stage.
+      Counts deals that ever reached each stage, so backward move cannot
+      inflate or duplicates a stage. Enquiry is counted from dim_deals, 
+      because every deal starts there and a brand new deal has no transition row yet.
+    columns:
+      - name: stage
+        description: "Pipeline stage, in order (Enquiry -> Quoted -> Won -> Invoiced)."
+        data_tests:
+          - not_null
+          - unique
+      - name: deal_entered
+        description: "Distinct deals that reached this stage."
+      - name: next_stage_entered
+        description: "Distinct deals that reached the next stage. Null for Invoiced."
+      - name: conversion_rate
+        description: "next_stage_entered / deal_entered * 100. Null for Invoiced"
+
+  - name: gold_pipelien_velocity 
+    description: > 
+      The duration transaction speed in each stages. One row per stage.
+      Build from fct_stage_transitions; include deals that were later lost.
+      Invoiced does not appear because deals never leave it.
+      Known limitation: deals still sitting in a stage are not counted 
+      until they move, so a current bottleneck can be under-reported.
+    columns: 
+      - name: stage
+        description: "Pipeline stage the deal was in 'from_stage'"
+        data_tests:
+          - not_null
+          - unique
+      - name: deal_count
+        description: "Distinct deals that left this stage."
+      - name: avg_days
+        description: "Mean days in stage. Sensitive to stuck deals."
+      - name: median_days
+        description: "Median days in stage. Typical deal, not skwed by outliers."
+      - name: is_bottleneck
+        description: >
+          True for the stage with the highest median days.
+          Use median so one stuck deal cannot flag a whole stage.
+          Ties flag every tied stages.
+  
+  - name: gold_rep_performance
+    description: > 
+      Sales rep leaderboard. One row per deal owner, using the current version
+      of each deal (dim_deals where is_current = true). Ordered by won_value.
+      Won = Won or Invoiced. Open = Enquiry or Quoted.
+    columns:
+      - name: deal_owner
+        description: "Sales rep who owns the deal now."
+        data_tests:
+          - not_null
+          - unique
+      - name: total_deals
+        description: "Distinct deals owned."
+      - name: won_deals
+        description: "Deals currently Won or Invoiced."
+      - name: win_rate
+        description: >
+          won_deals / total_deals * 100. Includes open deals in the denominator,
+          so reps with many open deals look lower than a closed-deals-only rate.
+      - name: total_value
+        description: "Sum of deal_value. Equals won + lost + open."
+      - name: won_value
+        description: "Value of Won or Invoiced deals."
+      - name: lost_value
+        description: "Value of Lost deals."
+      - name: open_value
+        description: "Value of Enquiry or Quoted deals."
+      - name: avg_deal_value
+        description: "Average value of WON deals only. 0 when the rep has no wins."
+
+  - name: gold_revenue_forecast
+    description: >
+      Weighted pipeline value. One row per stage, Lost excluded.
+      Probability by stage: Enquiry 10%, Quoted 30%, Won 70%, Invoiced 100%.
+      Probability is applied per deal before summing, so the model stays correct
+      if probabilities ever become deal-level.
+    columns:
+      - name: deal_stage
+        description: "Current stage of the deals."
+        data_tests:
+          - not_null
+          - unique
+      - name: deal_count
+        description: "Distinct deals currently in this stage."
+      - name: total_value
+        description: "Unweighted value of deals in this stage."
+      - name: win_probability
+        description: "Stage probability used for weighting. Unknown stages get 0."
+      - name: weighted_value
+        description: "SUM(deal_value * win_probability)."
+
           
