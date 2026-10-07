@@ -1,14 +1,21 @@
 import uuid
 import json
 import argparse
+import sys
 from confluent_kafka import Producer
 from simulator.config import get_producer_config, TOPIC 
 from simulator.deal_generator import generate_deal_lifecycle
 
+# The callback cant return a value to main(), it records the result here
+delivery_stats = {"delivered": 0, "failed": 0}
+
 def delivery_callback(err, msg):
     '''Called once per message to confirm delivery or report failure.'''
     if err is not None:
+        delivery_stats["failed"] += 1
         print(f" FAILED: {err}")
+    else:
+        delivery_stats["delivered"] += 1
 
 def main():
     # ---- Parse CLI arguments ----
@@ -45,17 +52,23 @@ def main():
             value = json.dumps(event),
             callback = delivery_callback
         )
-    remaining = producer.flush(timeout = 30)
+        producer.poll(0)
+
+    remaining = producer.flush(timeout=30)
 
     # ---- Summary ----
-    delivered = len(all_events) - remaining
+    total = len(all_events)
     print(f"\n{'='*50}")
-    print(f" Delivered: {delivered}/{len(all_events)} events")
-    if remaining > 0:
-        print(f" Warning: {remaining} events still in queue...")
-    else:
-        print(f" All events delivered successfully")
+    print(f" Delivered: {delivery_stats["delivered"]}/{total}")
+    print(f" Failed: {delivery_stats["failed"]}/{total}")
+    print(f" Undelivered (time out in queue): {remaining}")
     print(f"{'='*50}")
+
+    # Exit code: the only thing Airflow reads to decide green or red
+    if delivery_stats["failed"] > 0 or remaining > 0:
+        print(" Not all events reached Kafka")
+        sys.exit(1)
+    print(f" All events delivered successfully")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,4 @@
+services:
+  scheduler:
+    volumes:
+      - /Users/de_learn/Documents/portfolio/sales-pipeline-analytics/simulator:/usr/local/airflow/include/simulator:ro
