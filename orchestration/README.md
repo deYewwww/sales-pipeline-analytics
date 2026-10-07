@@ -1,45 +1,33 @@
-Overview
-========
+## Orchestration (Airflow)
 
-Welcome to Astronomer! This project was generated after you ran 'astro dev init' using the Astronomer CLI. This readme describes the contents of the project, as well as how to run Apache Airflow on your local machine.
+Two decoupled DAGs, run locally with the Astro CLI (Airflow 3 on Docker).
 
-Project Contents
-================
+| DAG | Schedule | Tasks | Role |
+|---|---|---|---|
+| `simulate_crm_events` | every 30 min | `generate_events` | Plays the CRM (source system): sends deal events to Kafka |
+| `sales_pipeline_analytics` | hourly at :15 | `databricks_bronze_silver` → `dbt_build` | The pipeline: Kafka → Bronze → Silver (Databricks Job), then Silver → Gold (dbt) |
 
-Your Astro project contains the following files and folders:
+**Kafka is the boundary.** The pipeline never calls the simulator; it reads whatever arrived since the last checkpoint.
+The 15-minute offset lets each pipeline run pick up the latest batch.
 
-- dags: This folder contains the Python files for your Airflow Dags. By default, this directory includes one example Dag:
-    - `example_astronauts`: This Dag shows a simple ETL pipeline example that queries the list of astronauts currently in space from the Open Notify API and prints a statement for each astronaut. The Dag uses the TaskFlow API to define tasks in Python, and dynamic task mapping to dynamically print a statement for each astronaut. For more on how this Dag works, see our [Getting started tutorial](https://www.astronomer.io/docs/learn/get-started-with-airflow).
-- Dockerfile: This file contains a versioned Astro Runtime Docker image that provides a differentiated Airflow experience. If you want to execute other commands or overrides at runtime, specify them here.
-- include: This folder contains any additional files that you want to include as part of your project. It is empty by default.
-- packages.txt: Install OS-level packages needed for your project by adding them to this file. It is empty by default.
-- requirements.txt: Install Python packages needed for your project by adding them to this file. It is empty by default.
-- plugins: Add custom or community plugins for your project to this file. It is empty by default.
-- airflow_settings.yaml: Use this local-only file to specify Airflow Connections, Variables, and Pools instead of entering them in the Airflow UI as you develop Dags in this project.
+### Design decisions
+- **Streaming in a batch scheduler:** Bronze uses `trigger(availableNow=True)`, so each run processes new offsets since the checkpoint and stops. Airflow tasks must finish.
+- **`max_active_runs=1`:** two concurrent runs would mean two streams on one checkpoint.
+- **Deferrable Databricks operator:** waiting happens in the triggerer, not a worker slot.
+- **Fail loudly:** the simulator exits non-zero if any Kafka delivery fails; dbt test failures fail the task.
+  If Databricks fails, `dbt_build` is `upstream_failed`, so Gold is never built from bad Silver (screenshot below).
+- **Same dbt engine everywhere:** dbt Fusion 2.0.6 pinned in the Airflow image to match local development.
+- **No secrets in Git:** connections, Kafka keys and the dbt token come from `orchestration/.env` (gitignored); the dbt profile reads env vars.
 
-Deploy Your Project Locally
-===========================
+### Run it
+1. Install Docker Desktop and the Astro CLI
+2. Update the two absolute paths in `orchestration/docker-compose.override.yml` to your clone location
+3. Create `orchestration/.env` with: `AIRFLOW_CONN_DATABRICKS_DEFAULT`, `AIRFLOW_VAR_DATABRICKS_JOB_ID`,
+   `CONFLUENT_BOOTSTRAP_SERVERS`, `CONFLUENT_API_KEY`, `CONFLUENT_API_SECRET`, `KAFKA_TOPIC`,
+   `DBT_DATABRICKS_HOST`, `DBT_DATABRICKS_HTTP_PATH`, `DBT_DATABRICKS_TOKEN`
+4. `cd orchestration && astro dev start`
 
-Start Airflow on your local machine by running 'astro dev start'.
-
-This command will spin up five Docker containers on your machine, each for a different Airflow component:
-
-- Postgres: Airflow's Metadata Database
-- Scheduler: The Airflow component responsible for monitoring and triggering tasks
-- Dag Processor: The Airflow component responsible for parsing Dags
-- API Server: The Airflow component responsible for serving the Airflow UI and API
-- Triggerer: The Airflow component responsible for triggering deferred tasks
-
-When all five containers are ready the command will open the browser to the Airflow UI at http://localhost:8080/. You should also be able to access your Postgres Database at 'localhost:5432/postgres' with username 'postgres' and password 'postgres'.
-
-Note: If you already have either of the above ports allocated, you can either [stop your existing Docker containers or change the port](https://www.astronomer.io/docs/astro/cli/troubleshoot-locally#ports-are-not-available-for-my-local-airflow-webserver).
-
-Deploy Your Project to Astronomer
-=================================
-
-If you have an Astronomer account, pushing code to a Deployment on Astronomer is simple. For deploying instructions, refer to Astronomer documentation: https://www.astronomer.io/docs/astro/deploy-code/
-
-Contact
-=======
-
-The Astronomer CLI is maintained with love by the Astronomer team. To report a bug or suggest a change, reach out to our support.
+### Known limitations / next steps
+- Task retries are the same for every error; 4xx API errors should fail fast, with retries kept for 5xx and timeouts.
+- Silver is rebuilt from all of Bronze each run (idempotent, simple); at scale this becomes an incremental `MERGE` on `event_id`.
+- Local Docker only; the same DAGs would deploy to MWAA or Cloud Composer without code changes.
