@@ -105,7 +105,7 @@ models:
       - name: conversion_rate
         description: "next_stage_entered / deal_entered * 100. Null for Invoiced"
 
-  - name: gold_pipelien_velocity 
+  - name: gold_pipeline_velocity 
     description: > 
       The duration transaction speed in each stages. One row per stage.
       Build from fct_stage_transitions; include deals that were later lost.

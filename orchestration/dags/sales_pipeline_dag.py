@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta
 from airflow.sdk import DAG
 from airflow.providers.databricks.operators.databricks import DatabricksRunNowOperator
+from airflow.providers.standard.operators.bash import BashOperator
+
+# Paths inside the container 
+DBT_PROJECT_DIR = "/usr/local/airflow/include/dbt_pipeline"
+DBT_PROFILES_DIR = "/usr/local/airflow/include/dbt_profiles"
 
 default_args = {
     "owner": "chun_keat",
@@ -18,6 +23,7 @@ with DAG(
     default_args=default_args,
     tags=["portfolio", "databricks"]
 ) as dag:
+    
     databricks_bronze_silver = DatabricksRunNowOperator(
         task_id="databricks_bronze_silver", 
         databricks_conn_id="databricks_default",
@@ -25,3 +31,12 @@ with DAG(
         deferrable=True,                                # wait in the trigger, not a worker slot 
         execution_timeout=timedelta(minutes=30)         # kill it if hangs
     )
+
+    dbt_build = BashOperator(
+        task_id = "dbt_build",
+        bash_command = (f"cd {DBT_PROJECT_DIR} && dbt build --profiles-dir {DBT_PROFILES_DIR} --target airflow"),
+        retries = 1,
+        execution_timeout = timedelta(minutes=20)
+    )
+
+    databricks_bronze_silver >> dbt_build
