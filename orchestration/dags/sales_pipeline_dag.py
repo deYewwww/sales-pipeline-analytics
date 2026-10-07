@@ -16,7 +16,7 @@ default_args = {
 with DAG(
     dag_id="sales_pipeline_analytics",
     start_date=datetime(2026,10,1),
-    schedule=None,                          # manual trigger while building; set a schedule on Day 9
+    schedule="15 * * * *",                  # manual trigger while building; set a schedule on Day 9
     catchup=False,                          # don't create run for every missed day since start_date
     max_active_runs=1,                      # never 2 runs at once -> no 2 stream on 1 checkpoint 
     render_template_as_native_obj=True,     # let "{{ ... }}" become a real init, not the STRING
