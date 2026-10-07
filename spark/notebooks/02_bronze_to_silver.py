@@ -1,11 +1,8 @@
 # Databricks notebook source
-# MAGIC %sql
-# MAGIC
-# MAGIC -- Observe the raw_payload from bronze table
-# MAGIC SELECT 
-# MAGIC     raw_payload 
-# MAGIC FROM sales_pipeline_analytics.bronze.raw_deal_events 
-# MAGIC LIMIT 3;
+# Silver: bronze.raw_deal_events -> silver.deal_events_cleaned
+# Pattern: batch read of ALL bronze + overwrite -> idempotent 
+BRONZE_TABLE = "sales_pipeline_analytics.bronze.raw_deal_events"
+SILVER_TABLE = "sales_pipeline_analytics.silver.deal_events_cleaned"
 
 # COMMAND ----------
 
@@ -30,11 +27,17 @@ event_schema = StructType([
 
 # COMMAND ----------
 
+spark.sql("CREATE SCHEMA IF NOT EXISTS sales_pipeline_analytics.silver")
+
+# COMMAND ----------
+
 '''
 Build Silver Dataframe 
 '''
-from pyspark.sql.functions import (col, from_json, to_timestamp, current_timestamp)
-from pyspark.sql.types import DecimalType
+from pyspark.sql.functions import (col, from_json, to_timestamp, current_timestamp,
+                                   when, array, array_compact, lit, row_number, coalesce, concat_ws)
+from pyspark.sql.types import StructType, StructField, StringType, DecimalType, DoubleType
+from pyspark.sql.window import Window
 
 # 1.Read bronze table 
 bronze_df = spark.read.table("sales_pipeline_analytics.bronze.raw_deal_events")
@@ -42,8 +45,23 @@ bronze_df = spark.read.table("sales_pipeline_analytics.bronze.raw_deal_events")
 # 2. Parse JSON 
 parsed_bronze_df = bronze_df.withColumn("parsed", from_json(col("raw_payload"), event_schema))
 
-# 3. Extracting fields
-silver_df = (parsed_bronze_df
+# 3. Deduplicate event_id
+dedup_key = coalesce(
+    col("parsed.event_id"), 
+    concat_ws("-", lit("no_event_id"), col("_kafka_partition"), col("_kafka_offset"))
+)
+
+# 4. 
+w = Window.partitionBy(dedup_key).orderBy(col("_kafka_timestamp"), col("_kafka_partition"), col("_kafka_offset"))
+
+deduped_df= (parsed_bronze_df
+                .withColumn("_rn", row_number().over(w))
+                .filter(col("_rn") == 1)
+                .drop(col("_rn"))
+)
+
+# 5. Extracting fields
+silver_df = (deduped_df
              .select(
                  col("parsed.event_id"),
                  col("parsed.deal_id"),
@@ -59,26 +77,17 @@ silver_df = (parsed_bronze_df
                  col("_kafka_partition").alias("_kafka_partition"),
                  col("_kafka_offset").alias("_kafka_offset"),
                  col("_kafka_timestamp").alias("_kafka_timestamp"),
-                 current_timestamp().alias("_ingested_at")
+                 current_timestamp().alias("_ingested_at"),
+                 col("parsed").isNull().alias("_is_malformed")
             ))
-
-    
-# Verify schema
-silver_df.printSchema()
-# showing deal_id with full (show() will cutoff strings longer than 20)
-silver_df.show(5, truncate=False)
-
-
-
-
-# COMMAND ----------
 
 '''
 Build a quality flag column
 '''
-from pyspark.sql.functions import(col, when, array, array_compact, lit)
-
+# 6. Quality flag
 quality_flags = array(
+    when(col("_is_malformed"), lit("malformed_json")),      
+    when(~col("_is_malformed") & col("event_id").isNull(), lit("missing_event_id")),
     when(col("deal_value_rm").isNull(), lit("missing_deal_value")),
     when(col("new_stage").isNull(), lit("missing_stage")),
     when(col("event_timestamp").isNull(), lit("missing_timestamp")),
@@ -86,67 +95,50 @@ quality_flags = array(
         (col("event_type") == "stage_changed") & (col("old_stage") == col("new_stage")), 
         lit("stage_unchanged")
     )
-
 )
 
 # Add quality flags to silver dataframe
-silver_df = silver_df.withColumn("_quality_flags", array_compact(quality_flags))
-silver_df.show(5, truncate=False)
-
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC
-# MAGIC -- Create the silver schema
-# MAGIC CREATE SCHEMA IF NOT EXISTS sales_pipeline_analytics.silver;
-# MAGIC
-# MAGIC
-
-# COMMAND ----------
+silver_df = (silver_df
+             .withColumn("_quality_flags", array_compact(quality_flags))
+             .drop("_is_malformed")
+)
 
 '''
 Write to silver table
 '''
-
-spark.sql("USE CATALOG sales_pipeline_analytics")
-
-# Write to silver table
-(
-    silver_df.write
+# 7. Write to silver table
+(silver_df.write
     .format("delta")
     .mode("overwrite")
-    .saveAsTable("sales_pipeline_analytics.silver.deal_events_cleaned")
+    .saveAsTable(SILVER_TABLE)
 )
 
+'''
+Assertions
+'''
+# 8. Assertions: a failed check PAISES, so the task goes red and Airflow stop before dbt
+silver = spark.read.table(SILVER_TABLE)
+bronze_count = spark.read.table(BRONZE_TABLE).count()
+silver_count = silver.count()
+dup_event_ids = (silver
+                 .filter(col("event_id").isNotNull())
+                 .groupBy("event_id").count()
+                 .filter(col("count") > 1)
+                 .count()
+)
 
+errors = []
+if silver_count == 0:
+    errors.append("Silver is empty")
+if silver_count > bronze_count:
+    errors.append(f"Silver: ({silver_count}) > Bronze: ({bronze_count}): dedup or join bug")
+if dup_event_ids > 0:
+    errors.append(f"{dup_event_ids} duplicate event_id in Silver")
 
-# COMMAND ----------
+if errors: 
+    raise ValueError("Silver quality check failed: " + "; ".join(errors))
 
-# MAGIC %sql
-# MAGIC
-# MAGIC -- 1. Row count should match Bronze 
-# MAGIC SELECT 
-# MAGIC     'bronze' AS layer,
-# MAGIC     COUNT(*) AS cnt
-# MAGIC FROM sales_pipeline_analytics.bronze.raw_deal_events
-# MAGIC UNION ALL 
-# MAGIC SELECT 
-# MAGIC     'silver' AS layer,
-# MAGIC     COUNT(*) AS cnt
-# MAGIC FROM sales_pipeline_analytics.silver.deal_events_cleaned;
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC
-# MAGIC -- 2. Quality flag distribution 
-# MAGIC SELECT 
-# MAGIC     _quality_flags,
-# MAGIC     COUNT(*) AS cnt
-# MAGIC FROM sales_pipeline_analytics.silver.deal_events_cleaned
-# MAGIC GROUP BY _quality_flags
-# MAGIC ORDER BY cnt DESC;
-# MAGIC
-# MAGIC
-# MAGIC
+print(
+    f"Silver completed: bronze={bronze_count}, silver={silver_count}, "
+    f"deduped={bronze_count - silver_count}"
+)
