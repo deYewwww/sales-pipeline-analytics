@@ -31,15 +31,12 @@ spark/checkpoints/
 spark/metastore_db/
 derby.log
 
-# Airflow
-airflow/logs/
-airflow/airflow.db
-
 # dbt
 dbt_pipeline/target/
 dbt_pipeline/dbt_packages/
 dbt_pipeline/logs/
-profiles.yml
+/profiles.yml
+.user.yml
 
-
-
+# Streamlit
+.streamlit/secrets.toml
