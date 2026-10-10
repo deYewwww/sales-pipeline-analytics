@@ -2,4 +2,13 @@
 confluent-kafka==2.15.1
 
 # Environment variables
-python-dotenv==1.2.3 
+python-dotenv==1.2.4
+
+# Databricks
+databricks-sql-connector==4.6.0
+
+# Dashboard 
+streamlit==1.65.0
+pandas==3.0.6
+plotly==7.1.0
+pyarrow==25.0.1
