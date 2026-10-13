@@ -12,6 +12,12 @@ WITH stage_stats AS(
         COUNT(DISTINCT deal_id) AS deal_count
     FROM {{ ref('fct_stage_transitions') }}
     GROUP BY 1
+),
+benchmark AS (
+    SELECT
+        *,
+        AVG(raw_median_days) OVER () AS pipeline_avg_median
+    FROM stage_stats
 )
 SELECT 
     stage,
@@ -20,15 +26,13 @@ SELECT
     ROUND(raw_median_days, 2) AS median_days,
     ROUND(raw_min_days, 2) AS min_days,
     ROUND(raw_max_days, 2) AS max_days,
-    CASE
-        WHEN raw_median_days = MAX(raw_median_days) OVER () THEN true 
-        ELSE false 
-    END AS is_bottleneck
-FROM stage_stats
+    raw_median_days > pipeline_avg_median * 1.5 AS is_bottleneck
+FROM benchmark
 ORDER BY    
     CASE stage
         WHEN 'Enquiry'  THEN 1 
         WHEN 'Quoted'   THEN 2 
         WHEN 'Won'      THEN 3 
         WHEN 'Invoiced' THEN 4
+        ELSE 99
     END

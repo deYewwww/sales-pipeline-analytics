@@ -98,6 +98,9 @@ models:
         data_tests:
           - not_null
           - unique
+          - accepted_values:
+              arguments:
+                values: ["Enquiry", "Quoted", "Won", "Invoiced"]
       - name: deal_entered
         description: "Distinct deals that reached this stage."
       - name: next_stage_entered
@@ -118,6 +121,9 @@ models:
         data_tests:
           - not_null
           - unique
+          - accepted_values:
+              arguments:
+                values: ["Enquiry", "Quoted", "Won", "Invoiced"]
       - name: deal_count
         description: "Distinct deals that left this stage."
       - name: avg_days
@@ -126,9 +132,11 @@ models:
         description: "Median days in stage. Typical deal, not skwed by outliers."
       - name: is_bottleneck
         description: >
-          True for the stage with the highest median days.
-          Use median so one stuck deal cannot flag a whole stage.
-          Ties flag every tied stages.
+          True when this stage's median duration is more than 1.5x the average
+          median across all stages. A relative threshold means a healthy pipeline
+          can have no bottleneck at all; flagging the slowest stage always
+          returns one, even when every stage performs the same.
+          Median is used so a single stuck deal cannot flag a whole stage.
   
   - name: gold_rep_performance
     description: > 
