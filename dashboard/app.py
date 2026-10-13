@@ -13,6 +13,7 @@ from queries import (
 )
 from datetime import datetime
 import plotly.graph_objects as go
+from queries import demo_mode
 
 # Business rule, kept at module level so it is easy to find and change.
 OPEN_STAGES = ["Enquiry", "Quoted"]
@@ -38,6 +39,11 @@ with right:
         st.cache_data.clear()
         st.rerun()
 
+# ---- Demo ---- 
+if demo_mode():
+    st.info("📦 Demo mode — showing a frozen snapshot of the Gold layer. "
+            "Add Databricks credentials in .streamlit/secrets.toml for live data.")
+
 # ---- Load ----
 funnel = load_conversion_funnel()
 velocity = load_pipeline_velocity()
@@ -45,7 +51,11 @@ reps = load_rep_performance()
 forecast = load_revenue_forecast()
 
 # Show when the numbers were actually fetched (cached results can be up to 10 min old)
-st.caption(f"Loaded at {datetime.now():%Y-%m-%d %H:%M} · Gold layer refreshes hourly at :15")
+st.caption(
+    "Snapshot - exported from the gold layer, not live."
+    if demo_mode()
+    else f"Loaded at {datetime.now():%Y-%m-%d %H:%M} · Gold layer refreshes hourly at :15"
+)
 
 # ---- KPIs ----
 total_deals = int(reps["total_deals"].sum())
